@@ -2,4 +2,4 @@ services:
   bthua:
     build: .
     ports:
-      - 8888:80
+      - 5212:80

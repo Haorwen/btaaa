@@ -3,6 +3,13 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
 LANG=en_US.UTF-8
 
+CURL_CHECK=$(which curl)
+if [ "$?" == "0" ];then
+	curl -sS --connect-timeout 10 -m 10 https://www.bt.cn/api/wpanel/SetupCount > /dev/null 2>&1
+else
+	wget -O /dev/null -o /dev/null -T 5 https://www.bt.cn/api/wpanel/SetupCount
+fi
+
 if [ $(whoami) != "root" ];then
 	echo "请使用root权限执行宝塔安装命令！"
 	exit 1;
@@ -48,7 +55,7 @@ GetSysInfo(){
 	echo -e ${SYS_VERSION}
 	echo -e Bit:${SYS_BIT} Mem:${MEM_TOTAL}M Core:${CPU_INFO}
 	echo -e ${SYS_INFO}
-	echo -e "请截图以上报错信息，到 TG群组：@rsakuras 进行反馈！"
+	echo -e "请截图以上报错信息发帖至论坛www.bt.cn/bbs求助"
 }
 Red_Error(){
 	echo '=================================================';
@@ -126,11 +133,39 @@ Service_Add(){
 	if [ "${PM}" == "yum" ] || [ "${PM}" == "dnf" ]; then
 		chkconfig --add bt
 		chkconfig --level 2345 bt on
+		Centos9Check=$(cat /etc/redhat-release |grep ' 9')
+		if [ "${Centos9Check}" ];then
+            wget -O /usr/lib/systemd/system/btpanel.service ${download_Url}/init/systemd/btpanel.service
+			systemctl enable btpanel
+		fi		
 	elif [ "${PM}" == "apt-get" ]; then
 		update-rc.d bt defaults
 	fi 
 }
-
+Set_Centos_Repo(){
+	HUAWEI_CHECK=$(cat /etc/motd |grep "Huawei Cloud")
+	if [ "${HUAWEI_CHECK}" ] && [ "${is64bit}" == "64" ];then
+		\cp -rpa /etc/yum.repos.d/ /etc/yumBak
+		sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*.repo
+		sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.epel.cloud|g' /etc/yum.repos.d/CentOS-*.repo
+		rm -f /etc/yum.repos.d/epel.repo
+		rm -f /etc/yum.repos.d/epel-*
+	fi
+	ALIYUN_CHECK=$(cat /etc/motd|grep "Alibaba Cloud ")
+	if [  "${ALIYUN_CHECK}" ] && [ "${is64bit}" == "64" ] && [ ! -f "/etc/yum.repos.d/Centos-vault-8.5.2111.repo" ];then
+		rename '.repo' '.repo.bak' /etc/yum.repos.d/*.repo
+		wget https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo -O /etc/yum.repos.d/Centos-vault-8.5.2111.repo
+		wget https://mirrors.aliyun.com/repo/epel-archive-8.repo -O /etc/yum.repos.d/epel-archive-8.repo
+		sed -i 's/mirrors.cloud.aliyuncs.com/url_tmp/g'  /etc/yum.repos.d/Centos-vault-8.5.2111.repo &&  sed -i 's/mirrors.aliyun.com/mirrors.cloud.aliyuncs.com/g' /etc/yum.repos.d/Centos-vault-8.5.2111.repo && sed -i 's/url_tmp/mirrors.aliyun.com/g' /etc/yum.repos.d/Centos-vault-8.5.2111.repo
+		sed -i 's/mirrors.aliyun.com/mirrors.cloud.aliyuncs.com/g' /etc/yum.repos.d/epel-archive-8.repo
+	fi
+	MIRROR_CHECK=$(cat /etc/yum.repos.d/CentOS-Linux-AppStream.repo |grep "[^#]mirror.centos.org")
+	if [ "${MIRROR_CHECK}" ] && [ "${is64bit}" == "64" ];then
+		\cp -rpa /etc/yum.repos.d/ /etc/yumBak
+		sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*.repo
+		sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.epel.cloud|g' /etc/yum.repos.d/CentOS-*.repo
+	fi
+}
 get_node_url(){
 	if [ ! -f /bin/curl ];then
 		if [ "${PM}" = "yum" ]; then
@@ -192,7 +227,6 @@ get_node_url(){
 	rm -f $tmp_file1
 	rm -f $tmp_file2
 	download_Url=$NODE_URL
-	downloads_Url=http://download.moetas.com/ltd
 	echo "Download node: $download_Url";
 	echo '---------------------------------------------';
 }
@@ -213,6 +247,9 @@ Remove_Package(){
 Install_RPM_Pack(){
 	yumPath=/etc/yum.conf
 	Centos8Check=$(cat /etc/redhat-release | grep ' 8.' | grep -iE 'centos|Red Hat')
+	if [ "${Centos8Check}" ];then
+		Set_Centos_Repo
+	fi	
 	isExc=$(cat $yumPath|grep httpd)
 	if [ "$isExc" = "" ];then
 		echo "exclude=httpd nginx php mysql mairadb python-psutil python2-psutil" >> $yumPath
@@ -225,9 +262,9 @@ Install_RPM_Pack(){
 	#	curl -Ss --connect-timeout 3 -m 60 http://download.bt.cn/install/yumRepo_select.sh|bash
 	#fi
 	
-	#尝试同步时间(从www.moetas.com)
+	#尝试同步时间(从bt.cn)
 	echo 'Synchronizing system time...'
-	getBtTime=$(curl -sS --connect-timeout 3 -m 60 https://www.moetas.com/api/index/get_time)
+	getBtTime=$(curl -sS --connect-timeout 3 -m 60 http://www.bt.cn/api/index/get_time)
 	if [ "${getBtTime}" ];then	
 		date -s "$(date -d @$getBtTime +"%Y-%m-%d %H:%M:%S")"
 	fi
@@ -282,6 +319,12 @@ Install_Deb_Pack(){
 	#echo 'Synchronizing system time...'
 	#ntpdate 0.asia.pool.ntp.org
 	#apt-get upgrade -y
+	LIBCURL_VER=$(dpkg -l|grep libcurl4|awk '{print $3}')
+	if [ "${LIBCURL_VER}" == "7.68.0-1ubuntu2.8" ];then
+		apt-get remove libcurl4 -y
+		apt-get install curl -y
+	fi
+
 	debPacks="wget curl libcurl4-openssl-dev gcc make zip unzip tar openssl libssl-dev gcc libxml2 libxml2-dev zlib1g zlib1g-dev libjpeg-dev libpng-dev lsof libpcre3 libpcre3-dev cron net-tools swig build-essential libffi-dev libbz2-dev libncurses-dev libsqlite3-dev libreadline-dev tk-dev libgdbm-dev libdb-dev libdb++-dev libpcap-dev xz-utils git";
 	apt-get install -y $debPacks --force-yes
 
@@ -289,7 +332,7 @@ Install_Deb_Pack(){
 	do
 		packCheck=$(dpkg -l ${debPack})
 		if [ "$?" -ne "0" ] ;then
-			apt-get install -y debPack
+			apt-get install -y $debPack
 		fi
 	done
 
@@ -314,6 +357,9 @@ Get_Versions(){
 		os_version=$(cat $redhat_version_file|grep CentOS|grep -Eo '([0-9]+\.)+[0-9]+'|grep -Eo '^[0-9]')
 		if [ "${os_version}" = "5" ];then
 			os_version=""
+		fi
+		if [ -z "${os_version}" ];then
+			os_version=$(cat /etc/redhat-release |grep Stream|grep -oE 8)
 		fi
 	else
 		os_type='ubuntu'
@@ -340,7 +386,15 @@ Get_Versions(){
 			if [ "$os_version" = "19" ];then
 				os_version=""
 			fi
-
+			if [ "$os_version" = "21" ];then
+				os_version=""
+			fi
+			if [ "$os_version" = "20" ];then
+				os_version2004=$(cat /etc/issue|grep 20.04)
+				if [ -z "${os_version2004}" ];then
+					os_version=""
+				fi
+			fi
 		fi
 	fi
 }
@@ -360,10 +414,50 @@ Install_Python_Lib(){
 				$pyenv_path/pyenv/bin/pip install -r $pyenv_path/pyenv/pip.txt
 			fi
 			source $pyenv_path/pyenv/bin/activate
+			chmod -R 700 $pyenv_path/pyenv/bin
 			return
 		else
 			rm -rf $pyenv_path/pyenv
 		fi
+	fi
+
+	is_loongarch64=$(uname -a|grep loongarch64)
+	if [ "$is_loongarch64" != "" ] && [ -f "/usr/bin/yum" ];then
+		yumPacks="python3-devel python3-pip python3-psutil python3-gevent python3-pyOpenSSL python3-paramiko python3-flask python3-rsa python3-requests python3-six python3-websocket-client"
+		yum install -y ${yumPacks}
+		for yumPack in ${yumPacks}
+		do
+			rpmPack=$(rpm -q ${yumPack})
+			packCheck=$(echo ${rpmPack}|grep not)
+			if [ "${packCheck}" ]; then
+				yum install ${yumPack} -y
+			fi
+		done
+
+		pip3 install -U pip
+		pip3 install Pillow psutil pyinotify pycryptodome upyun oss2 pymysql qrcode qiniu redis pymongo Cython configparser cos-python-sdk-v5 supervisor gevent-websocket pyopenssl
+		pip3 install flask==1.1.4
+		pip3 install Pillow -U
+
+		pyenv_bin=/www/server/panel/pyenv/bin
+		mkdir -p $pyenv_bin
+		ln -sf /usr/local/bin/pip3 $pyenv_bin/pip
+		ln -sf /usr/local/bin/pip3 $pyenv_bin/pip3
+		ln -sf /usr/local/bin/pip3 $pyenv_bin/pip3.7
+
+		if [ -f "/usr/bin/python3.7" ];then
+			ln -sf /usr/bin/python3.7 $pyenv_bin/python
+			ln -sf /usr/bin/python3.7 $pyenv_bin/python3
+			ln -sf /usr/bin/python3.7 $pyenv_bin/python3.7
+		elif [ -f "/usr/bin/python3.6"  ]; then
+			ln -sf /usr/bin/python3.6 $pyenv_bin/python
+			ln -sf /usr/bin/python3.6 $pyenv_bin/python3
+			ln -sf /usr/bin/python3.6 $pyenv_bin/python3.7
+		fi
+
+		echo > $pyenv_bin/activate
+
+		return
 	fi
 
 	py_version="3.7.8"
@@ -473,14 +567,18 @@ Install_Bt(){
 	mkdir -p /www/backup/database
 	mkdir -p /www/backup/site
 
+	if [ ! -d "/etc/init.d" ];then
+		mkdir -p /etc/init.d
+	fi
+
 	if [ -f "/etc/init.d/bt" ]; then
 		/etc/init.d/bt stop
 		sleep 1
 	fi
 
-	wget -O /etc/init.d/bt ${downloads_Url}/install/src/bt6.init -T 10
+	wget -O /etc/init.d/bt ${download_Url}/install/src/bt6.init -T 10
 	wget -O /www/server/panel/install/public.sh ${download_Url}/install/public.sh -T 10
-	wget -O panel.zip ${downloads_Url}/install/src/panel6.zip -T 10
+	wget -O panel.zip ${download_Url}/install/src/panel6.zip -T 10
 
 	if [ -f "${setup_path}/server/panel/data/default.db" ];then
 		if [ -d "/${setup_path}/server/panel/old_data" ];then
@@ -530,12 +628,18 @@ Install_Bt(){
 	chmod -R +x ${setup_path}/server/panel/script
 	ln -sf /etc/init.d/bt /usr/bin/bt
 	echo "${panelPort}" > ${setup_path}/server/panel/data/port.pl
-	wget -O /etc/init.d/bt ${downloads_Url}/install/src/bt7.init -T 10
-	wget -O /www/server/panel/init.sh ${downloads_Url}/install/src/bt7.init -T 10
+	wget -O /etc/init.d/bt ${download_Url}/install/src/bt7.init -T 10
+	wget -O /www/server/panel/init.sh ${download_Url}/install/src/bt7.init -T 10
 	wget -O /www/server/panel/data/softList.conf ${download_Url}/install/conf/softList.conf
-	sed -i 's/[0-9\.]\+[ ]\+www.bt.cn//g' /etc/hosts
 }
 Set_Bt_Panel(){
+	Run_User="www"
+	wwwUser=$(cat /etc/passwd|cut -d ":" -f 1|grep ^www$)
+	if [ "${wwwUser}" != "www" ];then
+		groupadd ${Run_User}
+		useradd -s /sbin/nologin -g ${Run_User} ${Run_User}
+	fi
+
 	password=$(cat /dev/urandom | head -n 16 | md5sum | head -c 8)
 	sleep 1
 	admin_auth="/www/server/panel/data/admin_path.pl"
@@ -543,6 +647,9 @@ Set_Bt_Panel(){
 		auth_path=$(cat /dev/urandom | head -n 16 | md5sum | head -c 8)
 		echo "/${auth_path}" > ${admin_auth}
 	fi
+	chmod -R 700 $pyenv_path/pyenv/bin
+	/www/server/panel/pyenv/bin/pip3 install flask -U
+	/www/server/panel/pyenv/bin/pip3 install flask-sock
 	auth_path=$(cat ${admin_auth})
 	cd ${setup_path}/server/panel/
 	/etc/init.d/bt start
@@ -575,6 +682,7 @@ Set_Firewall(){
 			ufw allow 21/tcp
 			ufw allow 22/tcp
 			ufw allow 80/tcp
+			ufw allow 443/tcp
 			ufw allow 888/tcp
 			ufw allow ${panelPort}/tcp
 			ufw allow ${sshPort}/tcp
@@ -590,6 +698,7 @@ Set_Firewall(){
 			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 21 -j ACCEPT
 			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
 			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 80 -j ACCEPT
+			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 443 -j ACCEPT
 			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport ${panelPort} -j ACCEPT
 			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport ${sshPort} -j ACCEPT
 			iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport 39000:40000 -j ACCEPT
@@ -616,6 +725,7 @@ Set_Firewall(){
 			firewall-cmd --permanent --zone=public --add-port=21/tcp > /dev/null 2>&1
 			firewall-cmd --permanent --zone=public --add-port=22/tcp > /dev/null 2>&1
 			firewall-cmd --permanent --zone=public --add-port=80/tcp > /dev/null 2>&1
+			firewall-cmd --permanent --zone=public --add-port=443/tcp > /dev/null 2>&1
 			firewall-cmd --permanent --zone=public --add-port=${panelPort}/tcp > /dev/null 2>&1
 			firewall-cmd --permanent --zone=public --add-port=${sshPort}/tcp > /dev/null 2>&1
 			firewall-cmd --permanent --zone=public --add-port=39000-40000/tcp > /dev/null 2>&1
@@ -626,13 +736,13 @@ Set_Firewall(){
 }
 Get_Ip_Address(){
 	getIpAddress=""
-	getIpAddress=$(curl -sS --connect-timeout 10 -m 60 https://www.moetas.com/Api/getIpAddress)
+	getIpAddress=$(curl -sS --connect-timeout 10 -m 60 https://www.bt.cn/Api/getIpAddress)
 	if [ -z "${getIpAddress}" ] || [ "${getIpAddress}" = "0.0.0.0" ]; then
 		isHosts=$(cat /etc/hosts|grep 'www.bt.cn')
 		if [ -z "${isHosts}" ];then
 			echo "" >> /etc/hosts
 			echo "116.213.43.206 www.bt.cn" >> /etc/hosts
-			getIpAddress=$(curl -sS --connect-timeout 10 -m 60 https://www.moetas.com/Api/getIpAddress)
+			getIpAddress=$(curl -sS --connect-timeout 10 -m 60 https://www.bt.cn/Api/getIpAddress)
 			if [ -z "${getIpAddress}" ];then
 				sed -i "/bt.cn/d" /etc/hosts
 			fi
@@ -698,29 +808,31 @@ Install_Main(){
 
 echo "
 +----------------------------------------------------------------------
-| 宝塔面板一键安装脚本(For Railway Cloud,Debian or Ubuntu Linux)
+| Bt-WebPanel FOR CentOS/Ubuntu/Debian
 +----------------------------------------------------------------------
-| Copyright © Ice Year 的位面 (https://iceyear.ml/)
+| Copyright © 2015-2099 BT-SOFT(http://www.bt.cn) All rights reserved.
 +----------------------------------------------------------------------
-| 安装完后，请牢记输出的用户名和密码!!!
-+----------------------------------------------------------------------
-| 请在Railway 云给出的实例域名访问面板*^____^*
-+----------------------------------------------------------------------
-| 登陆后，SSH密码是 "iceyear".
+| The WebPanel URL will be http://SERVER_IP:8888 when installed.
 +----------------------------------------------------------------------
 "
+while [ "$go" != 'y' ] && [ "$go" != 'n' ]
+do
+	read -p "Do you want to install Bt-Panel to the $setup_path directory now?(y/n): " go;
+done
+
+if [ "$go" == 'n' ];then
+	exit;
+fi
 
 Install_Main
-#echo > /www/server/panel/data/bind.pl
-rm -rf /www/server/panel/data/bind.pl
+echo > /www/server/panel/data/bind.pl
 echo -e "=================================================================="
 echo -e "\033[32mCongratulations! Installed successfully!\033[0m"
 echo -e "=================================================================="
-echo  "外网面板地址(假的): http://${getIpAddress}:${panelPort}${auth_path}"
-echo  "内网面板地址(假的): http://${LOCAL_IP}:${panelPort}${auth_path}"
-echo  "其实，railway云里这些都是假的，请访问你实例的域名来查看宝塔面板(by Ice Year)"
-echo -e "用户名(牢记!): $username"
-echo -e "密码(牢记!): $password"
+echo  "外网面板地址: http://${getIpAddress}:${panelPort}${auth_path}"
+echo  "内网面板地址: http://${LOCAL_IP}:${panelPort}${auth_path}"
+echo -e "username: $username"
+echo -e "password: $password"
 echo -e "\033[33mIf you cannot access the panel,\033[0m"
 echo -e "\033[33mrelease the following panel port [${panelPort}] in the security group\033[0m"
 echo -e "\033[33m若无法访问面板，请检查防火墙/安全组是否有放行面板[${panelPort}]端口\033[0m"
@@ -729,6 +841,6 @@ echo -e "=================================================================="
 endTime=`date +%s`
 ((outTime=($endTime-$startTime)/60))
 echo -e "Time consumed:\033[32m $outTime \033[0mMinute!"
-echo -e " "
-echo -e "\033[31m已经安装完毕，欢迎使用！ \033[0m"  
-echo '80' > /www/server/panel/data/port.pl && /etc/init.d/bt restart
+
+
+
